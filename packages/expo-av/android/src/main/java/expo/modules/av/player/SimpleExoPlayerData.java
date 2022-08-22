@@ -18,11 +18,13 @@ import com.google.android.exoplayer2.MediaItem;
 import com.google.android.exoplayer2.PlaybackParameters;
 import com.google.android.exoplayer2.Player;
 import com.google.android.exoplayer2.SimpleExoPlayer;
+import com.google.android.exoplayer2.database.ExoDatabaseProvider;
 import com.google.android.exoplayer2.source.ExtractorMediaSource;
 import com.google.android.exoplayer2.source.LoadEventInfo;
 import com.google.android.exoplayer2.source.MediaLoadData;
 import com.google.android.exoplayer2.source.MediaSource;
 import com.google.android.exoplayer2.source.MediaSourceEventListener;
+import com.google.android.exoplayer2.source.ProgressiveMediaSource;
 import com.google.android.exoplayer2.source.dash.DashMediaSource;
 import com.google.android.exoplayer2.source.dash.DefaultDashChunkSource;
 import com.google.android.exoplayer2.source.hls.HlsMediaSource;
@@ -35,10 +37,16 @@ import com.google.android.exoplayer2.upstream.BandwidthMeter;
 import com.google.android.exoplayer2.upstream.DataSource;
 import com.google.android.exoplayer2.upstream.DataSpec;
 import com.google.android.exoplayer2.upstream.DefaultBandwidthMeter;
+import com.google.android.exoplayer2.upstream.DefaultHttpDataSourceFactory;
 import com.google.android.exoplayer2.upstream.RawResourceDataSource;
+import com.google.android.exoplayer2.upstream.cache.CacheDataSource;
+import com.google.android.exoplayer2.upstream.cache.CacheDataSourceFactory;
+import com.google.android.exoplayer2.upstream.cache.LeastRecentlyUsedCacheEvictor;
+import com.google.android.exoplayer2.upstream.cache.SimpleCache;
 import com.google.android.exoplayer2.util.Util;
 import com.google.android.exoplayer2.video.VideoListener;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.Map;
 
@@ -61,6 +69,8 @@ class SimpleExoPlayerData extends PlayerData
   private boolean mIsLooping = false;
   private boolean mIsLoading = true;
   private final Context mReactContext;
+
+  private SimpleCache cache;
 
   SimpleExoPlayerData(final AVManagerInterface avModule, final Context context, final Uri uri, final String overridingExtension, final Map<String, Object> requestHeaders) {
     super(avModule, uri, requestHeaders);
@@ -100,12 +110,27 @@ class SimpleExoPlayerData extends PlayerData
         .createFactory(
             mReactContext,
             mAVModule.getModuleRegistry(),
-            Util.getUserAgent(context, "yourApplicationName"),
+            Util.getUserAgent(context, context.getApplicationInfo().loadLabel(context.getPackageManager()).toString()),
             mRequestHeaders,
             bandwidthMeter.getTransferListener());
     try {
+      // Specify cache folder.
+      File cacheFolder = new File(context.getCacheDir(), "videoCache");
+
+      // Specify cache size and removing policies.
+      LeastRecentlyUsedCacheEvictor cacheEvictor = new LeastRecentlyUsedCacheEvictor(1 * 1024 * 1024 * 1024); // 1GB
+
+      // Build cache.
+      cache = new SimpleCache(cacheFolder, cacheEvictor, new ExoDatabaseProvider(context));
+
+      // Build data source factory with cache enabled, if data is available in cache it will return immediately, otherwise it will open a new connection to get the data.
+      CacheDataSource.Factory cacheDataSourceFactory = new CacheDataSource.Factory();
+      cacheDataSourceFactory.setCache(cache);
+      cacheDataSourceFactory.setUpstreamDataSourceFactory(dataSourceFactory);
+      cacheDataSourceFactory.setFlags(CacheDataSource.FLAG_BLOCK_ON_CACHE + CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR);
+
       // This is the MediaSource representing the media to be played.
-      final MediaSource source = buildMediaSource(mUri, mOverridingExtension, dataSourceFactory);
+      MediaSource source = new ProgressiveMediaSource.Factory(cacheDataSourceFactory).createMediaSource(mUri);
 
       // Prepare the player with the source.
       mSimpleExoPlayer.prepare(source);
@@ -122,6 +147,10 @@ class SimpleExoPlayerData extends PlayerData
     if (mSimpleExoPlayer != null) {
       mSimpleExoPlayer.release();
       mSimpleExoPlayer = null;
+    }
+    if (cache != null) {
+      cache.release();
+      cache = null;
     }
   }
 
